@@ -6,12 +6,20 @@
 // natural y él se encarga de consultar o crear facturas,
 // buscar clientes y revisar pagos — sin tocar ningún sistema.
 //
-// Para que funcione necesitas dos datos de tu cuenta Piriod:
-//   - PIRIOD_TOKEN: tu token de API (lo encuentras en Configuración > API)
-//   - PIRIOD_ORG:   tu ID de organización (empieza con "acc_")
+// Autenticación por usuario (Bearer token):
+//   Cada usuario se autentica enviando sus credenciales en
+//   los headers de cada petición:
 //
-// El servidor escucha en HTTP. El puerto se configura con la
-// variable de entorno PORT (Railway la asigna automáticamente).
+//     Authorization: Bearer {PIRIOD_TOKEN}
+//     X-Piriod-Org:  {PIRIOD_ORG}
+//
+//   De esta forma, el servidor no necesita credenciales globales
+//   y múltiples usuarios pueden conectarse con sus propias cuentas.
+//
+// Fallback local (Claude Desktop):
+//   Si no se envían headers de autenticación, el servidor usa
+//   las variables de entorno PIRIOD_TOKEN y PIRIOD_ORG.
+//   Esto mantiene compatibilidad con la configuración local.
 // ============================================================
 
 import { createServer } from "node:http";
@@ -22,23 +30,37 @@ import { z } from "zod";
 // URL base de la API de Piriod. No necesitas cambiar esto.
 const API_URL = "https://api.piriod.com";
 
-// Las credenciales se leen desde las variables de entorno
-// que configuraste en claude_desktop_config.json.
-const API_KEY = process.env.PIRIOD_TOKEN;
-const ORG_ID  = process.env.PIRIOD_ORG;
+// ============================================================
+// Extrae las credenciales del request entrante
+// ============================================================
+// Prioridad:
+//   1. Headers del request (autenticación por usuario)
+//   2. Variables de entorno (fallback para uso local)
+//
+// Retorna null si no hay credenciales disponibles por ninguna vía.
+const extractCredentials = (req) => {
+  const authHeader = req.headers["authorization"] ?? "";
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim()
+    : process.env.PIRIOD_TOKEN;
+
+  const org = req.headers["x-piriod-org"] ?? process.env.PIRIOD_ORG;
+
+  if (!token || !org) return null;
+  return { token, org };
+};
 
 // ============================================================
 // Función auxiliar para hacer llamadas a la API de Piriod
 // ============================================================
-// Cada vez que Claude necesita consultar o enviar algo a Piriod,
-// usa esta función. Ella se encarga de incluir tu token y tu
-// organización en cada petición automáticamente.
-const api = async (path, opts = {}) => {
+// Recibe las credenciales del usuario actual (no globales)
+// y las incluye en cada petición automáticamente.
+const makeApi = (token, org) => async (path, opts = {}) => {
   const res = await fetch(`${API_URL}${path}`, {
     ...opts,
     headers: {
-      "Authorization": `Token ${API_KEY}`,      // Tu token de autenticación
-      "x-simple-workspace": ORG_ID,              // Tu organización en Piriod
+      "Authorization": `Token ${token}`,   // Token del usuario
+      "x-simple-workspace": org,            // Organización del usuario
       "Content-Type": "application/json",
       ...opts.headers,
     },
@@ -47,13 +69,14 @@ const api = async (path, opts = {}) => {
 };
 
 // ============================================================
-// Factory: crea un McpServer con todas las tools registradas
+// Factory: crea un McpServer con las credenciales del usuario
 // ============================================================
 // En modo stateless (una petición HTTP = una sesión MCP),
-// se necesita un McpServer nuevo por cada request.
-// Si se reutiliza la misma instancia, el SDK no re-expone
-// las tools al cliente y devuelve tools: [].
-const createMcpServer = () => {
+// se crea un McpServer nuevo por cada request.
+// Las credenciales se pasan por closure, así cada sesión
+// usa el token y la organización del usuario que se conectó.
+const createMcpServer = (token, org) => {
+  const api = makeApi(token, org);
   const server = new McpServer({ name: "piriod", version: "1.0.0" });
 
   // ============================================================
@@ -159,18 +182,16 @@ const createMcpServer = () => {
 // El servidor escucha en el puerto definido por la variable
 // de entorno PORT. Railway asigna este valor automáticamente.
 // En local puedes usar: PORT=3000 node index.js
-//
-// Cada petición al endpoint /mcp crea su propio transport
-// (modo stateless), lo que simplifica el deploy y el escalado.
 const PORT = process.env.PORT || 3000;
 
 // Headers CORS necesarios para que claude.ai (y cualquier
 // cliente web) pueda conectarse sin que el navegador bloquee
-// la petición con "Failed to fetch".
+// la petición. Se expone X-Piriod-Org para que los clientes
+// puedan enviar sus credenciales.
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id, Authorization, X-Piriod-Org",
 };
 
 const httpServer = createServer(async (req, res) => {
@@ -187,14 +208,22 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Añadimos los headers CORS a todas las respuestas del endpoint
+  // Aplicamos los headers CORS a todas las respuestas
   Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
 
-  // Creamos un servidor y transport nuevos por cada petición.
-  // Esto es necesario en modo stateless: si se reutiliza la
-  // misma instancia de McpServer, el SDK no re-expone las tools
-  // al cliente y devuelve tools: [].
-  const server = createMcpServer();
+  // Extraemos las credenciales del request (header o env vars)
+  const credentials = extractCredentials(req);
+  if (!credentials) {
+    res.writeHead(401).end(JSON.stringify({
+      error: "Se requieren credenciales. Envía Authorization: Bearer {PIRIOD_TOKEN} y X-Piriod-Org: {PIRIOD_ORG}",
+    }));
+    return;
+  }
+
+  // Creamos un servidor con las credenciales de este usuario.
+  // Cada request tiene su propia instancia — las credenciales
+  // nunca se mezclan entre usuarios distintos.
+  const server = createMcpServer(credentials.token, credentials.org);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await server.connect(transport);
   await transport.handleRequest(req, res);
