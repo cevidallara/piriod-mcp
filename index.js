@@ -216,6 +216,18 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // /.well-known/oauth-protected-resource
+  // Claude.ai web requiere este endpoint antes de conectarse
+  // (spec MCP 2025 / RFC 9728). Declara que el servidor acepta
+  // Bearer tokens sin requerir un flujo OAuth completo.
+  if (req.url === "/.well-known/oauth-protected-resource") {
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+      resource:                  `${process.env.SERVER_URL || "http://localhost:" + PORT}`,
+      bearer_methods_supported:  ["header"],
+    }));
+    return;
+  }
+
   // Endpoint de diagnóstico — útil para verificar que las
   // variables de entorno están cargadas correctamente en Railway.
   if (req.url === "/health") {
