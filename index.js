@@ -6,46 +6,61 @@
 // natural y él se encarga de consultar o crear facturas,
 // buscar clientes y revisar pagos — sin tocar ningún sistema.
 //
-// Autenticación por usuario (Bearer token):
-//   Cada usuario se autentica enviando sus credenciales en
-//   los headers de cada petición:
+// Autenticación por URL única:
+//   Cada usuario tiene su propia URL secreta:
+//     https://tu-servidor.railway.app/mcp/{code}
 //
-//     Authorization: Bearer {PIRIOD_TOKEN}
-//     X-Piriod-Org:  {PIRIOD_ORG}
-//
-//   De esta forma, el servidor no necesita credenciales globales
-//   y múltiples usuarios pueden conectarse con sus propias cuentas.
+//   El código identifica al usuario y el servidor busca sus
+//   credenciales en Supabase. El usuario solo necesita pegar
+//   su URL en claude.ai — no maneja tokens directamente.
 //
 // Fallback local (Claude Desktop):
-//   Si no se envían headers de autenticación, el servidor usa
-//   las variables de entorno PIRIOD_TOKEN y PIRIOD_ORG.
-//   Esto mantiene compatibilidad con la configuración local.
+//   Si no hay código en la URL, el servidor usa las variables
+//   de entorno PIRIOD_TOKEN y PIRIOD_ORG (modo legacy).
 // ============================================================
 
 import { createServer } from "node:http";
+import { createClient } from "@supabase/supabase-js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+
+// ============================================================
+// Cliente de Supabase
+// ============================================================
+// Se conecta a la base de datos donde están guardadas las
+// credenciales de cada usuario registrado.
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY,
+);
 
 // URL base de la API de Piriod. No necesitas cambiar esto.
 const API_URL = "https://api.piriod.com";
 
 // ============================================================
-// Extrae las credenciales del request entrante
+// Resuelve las credenciales para el request entrante
 // ============================================================
 // Prioridad:
-//   1. Headers del request (autenticación por usuario)
-//   2. Variables de entorno (fallback para uso local)
+//   1. Código en la URL /mcp/:code → busca en Supabase
+//   2. Variables de entorno PIRIOD_TOKEN / PIRIOD_ORG (fallback local)
 //
-// Retorna null si no hay credenciales disponibles por ninguna vía.
-const extractCredentials = (req) => {
-  const authHeader = req.headers["authorization"] ?? "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : process.env.PIRIOD_TOKEN;
+// Retorna null si el código no existe o las credenciales no están.
+const resolveCredentials = async (code) => {
+  if (code) {
+    const { data, error } = await supabase
+      .from("mcp_clients")
+      .select("piriod_token, piriod_org")
+      .eq("code", code)
+      .single();
 
-  const org = req.headers["x-piriod-org"] ?? process.env.PIRIOD_ORG;
+    if (error || !data) return null;
+    return { token: data.piriod_token, org: data.piriod_org };
+  }
 
+  // Fallback: variables de entorno (Claude Desktop / uso local)
+  const token = process.env.PIRIOD_TOKEN;
+  const org   = process.env.PIRIOD_ORG;
   if (!token || !org) return null;
   return { token, org };
 };
@@ -186,12 +201,11 @@ const PORT = process.env.PORT || 3000;
 
 // Headers CORS necesarios para que claude.ai (y cualquier
 // cliente web) pueda conectarse sin que el navegador bloquee
-// la petición. Se expone X-Piriod-Org para que los clientes
-// puedan enviar sus credenciales.
+// la petición.
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id, Authorization, X-Piriod-Org",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id",
 };
 
 const httpServer = createServer(async (req, res) => {
@@ -202,20 +216,29 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Solo atendemos el endpoint /mcp
-  if (req.url !== "/mcp") {
-    res.writeHead(404, CORS_HEADERS).end("Not found");
-    return;
-  }
-
   // Aplicamos los headers CORS a todas las respuestas
   Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
 
-  // Extraemos las credenciales del request (header o env vars)
-  const credentials = extractCredentials(req);
+  // Parseamos la URL para soportar /mcp y /mcp/:code
+  //   /mcp        → modo legacy con variables de entorno
+  //   /mcp/abc123 → busca credenciales del usuario en Supabase
+  const { pathname } = new URL(req.url, "http://localhost");
+  const match = pathname.match(/^\/mcp\/?([^/]*)$/);
+
+  if (!match) {
+    res.writeHead(404).end("Not found");
+    return;
+  }
+
+  const code = match[1] || null;
+
+  // Buscamos las credenciales del usuario según el código
+  const credentials = await resolveCredentials(code);
   if (!credentials) {
     res.writeHead(401).end(JSON.stringify({
-      error: "Se requieren credenciales. Envía Authorization: Bearer {PIRIOD_TOKEN} y X-Piriod-Org: {PIRIOD_ORG}",
+      error: code
+        ? "Código de acceso inválido o no encontrado."
+        : "Se requieren credenciales. Configura PIRIOD_TOKEN y PIRIOD_ORG.",
     }));
     return;
   }
