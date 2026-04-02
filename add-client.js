@@ -15,12 +15,12 @@
 import { randomBytes } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL     = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const SERVER_URL       = process.env.SERVER_URL || "http://localhost:3000";
+const SUPABASE_URL          = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SERVER_URL            = process.env.SERVER_URL || "http://localhost:3000";
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error("Error: faltan variables de entorno SUPABASE_URL y SUPABASE_ANON_KEY");
+if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+  console.error("Error: faltan variables de entorno SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY");
   process.exit(1);
 }
 
@@ -31,7 +31,9 @@ if (!nombre || !piriod_token || !piriod_org) {
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// El service role key bypasea RLS — solo usar en scripts de admin,
+// nunca en el servidor público.
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // Generamos un código de 32 caracteres hexadecimales (128 bits de entropía).
 // Es lo suficientemente largo para que sea imposible de adivinar.

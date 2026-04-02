@@ -10,6 +10,11 @@ create table mcp_clients (
   created_at   timestamptz default now()
 );
 
--- Ningún usuario anónimo puede leer ni escribir directamente.
--- Solo el servidor (service role) accede a esta tabla.
 alter table mcp_clients enable row level security;
+
+-- El servidor MCP (anon key) puede leer credenciales por código.
+-- Nadie puede insertar, actualizar ni borrar via anon key —
+-- eso solo lo hace add-client.js con el service role key.
+create policy "select by code"
+  on mcp_clients for select
+  using (true);
