@@ -158,14 +158,35 @@ server.tool("list_payments", "Lista los pagos.", {
 // (modo stateless), lo que simplifica el deploy y el escalado.
 const PORT = process.env.PORT || 3000;
 
+// Headers CORS necesarios para que claude.ai (y cualquier
+// cliente web) pueda conectarse sin que el navegador bloquee
+// la petición con "Failed to fetch".
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin":  "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id",
+};
+
 const httpServer = createServer(async (req, res) => {
-  // Solo atendemos el endpoint /mcp
-  if (req.url !== "/mcp") {
-    res.writeHead(404).end("Not found");
+  // Preflight CORS: el navegador envía OPTIONS antes de la
+  // petición real para verificar que el servidor la permite.
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS).end();
     return;
   }
 
-  // Creamos un transport nuevo por cada petición (stateless)
+  // Solo atendemos el endpoint /mcp
+  if (req.url !== "/mcp") {
+    res.writeHead(404, CORS_HEADERS).end("Not found");
+    return;
+  }
+
+  // Añadimos los headers CORS a todas las respuestas del endpoint
+  Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
+
+  // Creamos un transport nuevo por cada petición (stateless).
+  // sessionIdGenerator: undefined activa el modo stateless,
+  // que es el requerido para clientes como claude.ai web.
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await server.connect(transport);
   await transport.handleRequest(req, res);
