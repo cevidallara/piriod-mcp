@@ -216,6 +216,19 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Endpoint de diagnóstico — útil para verificar que las
+  // variables de entorno están cargadas correctamente en Railway.
+  if (req.url === "/health") {
+    const { data, error } = await supabase.from("mcp_clients").select("id").limit(1);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+      supabase_url:  !!process.env.SUPABASE_URL,
+      supabase_key:  !!process.env.SUPABASE_ANON_KEY,
+      db_ok:         !error,
+      db_error:      error?.message ?? null,
+    }));
+    return;
+  }
+
   // Aplicamos los headers CORS a todas las respuestas
   Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
 
