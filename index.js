@@ -47,105 +47,111 @@ const api = async (path, opts = {}) => {
 };
 
 // ============================================================
-// Inicialización del servidor MCP
+// Factory: crea un McpServer con todas las tools registradas
 // ============================================================
-// Esto crea el servidor que Claude Desktop va a reconocer
-// como "piriod" en su lista de herramientas disponibles.
-const server = new McpServer({ name: "piriod", version: "1.0.0" });
+// En modo stateless (una petición HTTP = una sesión MCP),
+// se necesita un McpServer nuevo por cada request.
+// Si se reutiliza la misma instancia, el SDK no re-expone
+// las tools al cliente y devuelve tools: [].
+const createMcpServer = () => {
+  const server = new McpServer({ name: "piriod", version: "1.0.0" });
 
-// ============================================================
-// TOOL 1: list_invoices — Listar facturas
-// ============================================================
-// Claude usa esta herramienta cuando le pides cosas como:
-//   "¿Cuáles facturas tengo pendientes?"
-//   "Muéstrame las facturas pagadas del cliente cus_abc"
-//   "Lista todas las facturas en borrador"
-//
-// Parámetros opcionales:
-//   - status:   filtra por estado (draft, finalized, paid)
-//   - customer: filtra por ID de cliente (ej: cus_abc123)
-server.tool("list_invoices", "Lista las facturas.", {
-  status:   z.string().optional().describe("draft | finalized | paid"),
-  customer: z.string().optional().describe("ID del cliente cus_xxx"),
-}, async ({ status, customer }) => {
-  const q = new URLSearchParams();
-  if (status)   q.set("status",   status);
-  if (customer) q.set("customer", customer);
-  const data = await api(`/invoices/?${q}`);
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-});
+  // ============================================================
+  // TOOL 1: list_invoices — Listar facturas
+  // ============================================================
+  // Claude usa esta herramienta cuando le pides cosas como:
+  //   "¿Cuáles facturas tengo pendientes?"
+  //   "Muéstrame las facturas pagadas del cliente cus_abc"
+  //   "Lista todas las facturas en borrador"
+  //
+  // Parámetros opcionales:
+  //   - status:   filtra por estado (draft, finalized, paid)
+  //   - customer: filtra por ID de cliente (ej: cus_abc123)
+  server.tool("list_invoices", "Lista las facturas.", {
+    status:   z.string().optional().describe("draft | finalized | paid"),
+    customer: z.string().optional().describe("ID del cliente cus_xxx"),
+  }, async ({ status, customer }) => {
+    const q = new URLSearchParams();
+    if (status)   q.set("status",   status);
+    if (customer) q.set("customer", customer);
+    const data = await api(`/invoices/?${q}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  });
 
-// ============================================================
-// TOOL 2: create_invoice — Crear y finalizar una factura
-// ============================================================
-// Claude usa esta herramienta cuando le pides cosas como:
-//   "Crea una factura para Juan por 2 horas de consultoría a $500"
-//   "Factura al cliente cus_xyz3 por el servicio mensual de marzo"
-//
-// El proceso es automático: primero crea la factura como borrador
-// y luego la finaliza en un solo paso.
-//
-// Parámetros requeridos:
-//   - customer: ID del cliente (ej: cus_abc123)
-//   - document: tipo de documento (ej: US1)
-//   - date:     fecha de emisión en formato YYYY-MM-DD
-//   - due_date: fecha de vencimiento en formato YYYY-MM-DD
-//   - lines:    lista de conceptos con nombre, cantidad y precio unitario
-server.tool("create_invoice", "Crea y finaliza una factura para un cliente.", {
-  customer: z.string().describe("ID del cliente cus_xxx"),
-  document: z.string().describe("ID del tipo de documento ej: US1"),
-  date:     z.string().describe("Fecha YYYY-MM-DD"),
-  due_date: z.string().describe("Vencimiento YYYY-MM-DD"),
-  lines:    z.array(z.object({
-    name:     z.string(),
-    quantity: z.number(),
-    amount:   z.number().describe("Precio unitario"),
-  })),
-}, async (params) => {
-  const draft = await api("/invoices/", { method: "POST", body: JSON.stringify(params) });
-  const final = await api(`/invoices/${draft.id}/finalize/`, { method: "POST" });
-  return { content: [{ type: "text", text: JSON.stringify(final, null, 2) }] };
-});
+  // ============================================================
+  // TOOL 2: create_invoice — Crear y finalizar una factura
+  // ============================================================
+  // Claude usa esta herramienta cuando le pides cosas como:
+  //   "Crea una factura para Juan por 2 horas de consultoría a $500"
+  //   "Factura al cliente cus_xyz3 por el servicio mensual de marzo"
+  //
+  // El proceso es automático: primero crea la factura como borrador
+  // y luego la finaliza en un solo paso.
+  //
+  // Parámetros requeridos:
+  //   - customer: ID del cliente (ej: cus_abc123)
+  //   - document: tipo de documento (ej: US1)
+  //   - date:     fecha de emisión en formato YYYY-MM-DD
+  //   - due_date: fecha de vencimiento en formato YYYY-MM-DD
+  //   - lines:    lista de conceptos con nombre, cantidad y precio unitario
+  server.tool("create_invoice", "Crea y finaliza una factura para un cliente.", {
+    customer: z.string().describe("ID del cliente cus_xxx"),
+    document: z.string().describe("ID del tipo de documento ej: US1"),
+    date:     z.string().describe("Fecha YYYY-MM-DD"),
+    due_date: z.string().describe("Vencimiento YYYY-MM-DD"),
+    lines:    z.array(z.object({
+      name:     z.string(),
+      quantity: z.number(),
+      amount:   z.number().describe("Precio unitario"),
+    })),
+  }, async (params) => {
+    const draft = await api("/invoices/", { method: "POST", body: JSON.stringify(params) });
+    const final = await api(`/invoices/${draft.id}/finalize/`, { method: "POST" });
+    return { content: [{ type: "text", text: JSON.stringify(final, null, 2) }] };
+  });
 
-// ============================================================
-// TOOL 3: find_customer — Buscar clientes
-// ============================================================
-// Claude usa esta herramienta cuando le pides cosas como:
-//   "Busca el cliente María García"
-//   "¿Cuál es el ID del cliente con email maria@empresa.com?"
-//
-// Útil para encontrar el ID de un cliente antes de crear
-// una factura o filtrar resultados.
-//
-// Parámetros requeridos:
-//   - search: nombre o email del cliente a buscar
-server.tool("find_customer", "Busca clientes por nombre o email.", {
-  search: z.string().describe("Nombre o email del cliente"),
-}, async ({ search }) => {
-  const data = await api(`/customers/?search=${encodeURIComponent(search)}`);
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-});
+  // ============================================================
+  // TOOL 3: find_customer — Buscar clientes
+  // ============================================================
+  // Claude usa esta herramienta cuando le pides cosas como:
+  //   "Busca el cliente María García"
+  //   "¿Cuál es el ID del cliente con email maria@empresa.com?"
+  //
+  // Útil para encontrar el ID de un cliente antes de crear
+  // una factura o filtrar resultados.
+  //
+  // Parámetros requeridos:
+  //   - search: nombre o email del cliente a buscar
+  server.tool("find_customer", "Busca clientes por nombre o email.", {
+    search: z.string().describe("Nombre o email del cliente"),
+  }, async ({ search }) => {
+    const data = await api(`/customers/?search=${encodeURIComponent(search)}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  });
 
-// ============================================================
-// TOOL 4: list_payments — Listar pagos
-// ============================================================
-// Claude usa esta herramienta cuando le pides cosas como:
-//   "¿Cuáles pagos están procesando?"
-//   "Muéstrame los pagos exitosos"
-//   "¿Hay pagos que requieren método de pago?"
-//
-// Parámetros opcionales:
-//   - status: filtra por estado del pago:
-//       requires_payment_method → pendiente de método de pago
-//       processing              → en proceso
-//       succeeded               → completado con éxito
-server.tool("list_payments", "Lista los pagos.", {
-  status: z.string().optional().describe("requires_payment_method | processing | succeeded"),
-}, async ({ status }) => {
-  const q = status ? `?status=${status}` : "";
-  const data = await api(`/payments/${q}`);
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-});
+  // ============================================================
+  // TOOL 4: list_payments — Listar pagos
+  // ============================================================
+  // Claude usa esta herramienta cuando le pides cosas como:
+  //   "¿Cuáles pagos están procesando?"
+  //   "Muéstrame los pagos exitosos"
+  //   "¿Hay pagos que requieren método de pago?"
+  //
+  // Parámetros opcionales:
+  //   - status: filtra por estado del pago:
+  //       requires_payment_method → pendiente de método de pago
+  //       processing              → en proceso
+  //       succeeded               → completado con éxito
+  server.tool("list_payments", "Lista los pagos.", {
+    status: z.string().optional().describe("requires_payment_method | processing | succeeded"),
+  }, async ({ status }) => {
+    const q = status ? `?status=${status}` : "";
+    const data = await api(`/payments/${q}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  });
+
+  return server;
+};
 
 // ============================================================
 // Arranque del servidor HTTP
@@ -184,9 +190,11 @@ const httpServer = createServer(async (req, res) => {
   // Añadimos los headers CORS a todas las respuestas del endpoint
   Object.entries(CORS_HEADERS).forEach(([k, v]) => res.setHeader(k, v));
 
-  // Creamos un transport nuevo por cada petición (stateless).
-  // sessionIdGenerator: undefined activa el modo stateless,
-  // que es el requerido para clientes como claude.ai web.
+  // Creamos un servidor y transport nuevos por cada petición.
+  // Esto es necesario en modo stateless: si se reutiliza la
+  // misma instancia de McpServer, el SDK no re-expone las tools
+  // al cliente y devuelve tools: [].
+  const server = createMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await server.connect(transport);
   await transport.handleRequest(req, res);
