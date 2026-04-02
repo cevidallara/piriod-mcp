@@ -10,12 +10,13 @@
 //   - PIRIOD_TOKEN: tu token de API (lo encuentras en Configuración > API)
 //   - PIRIOD_ORG:   tu ID de organización (empieza con "acc_")
 //
-// Estos se configuran en Claude Desktop, no aquí en el código.
-// Ver README.md para instrucciones paso a paso.
+// El servidor escucha en HTTP. El puerto se configura con la
+// variable de entorno PORT (Railway la asigna automáticamente).
 // ============================================================
 
+import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
 // URL base de la API de Piriod. No necesitas cambiar esto.
@@ -147,10 +148,29 @@ server.tool("list_payments", "Lista los pagos.", {
 });
 
 // ============================================================
-// Arranque del servidor
+// Arranque del servidor HTTP
 // ============================================================
-// Esto inicia la conexión entre este servidor y Claude Desktop.
-// Claude Desktop ejecuta este archivo automáticamente cuando
-// lo necesita — no tienes que hacer nada manualmente.
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// El servidor escucha en el puerto definido por la variable
+// de entorno PORT. Railway asigna este valor automáticamente.
+// En local puedes usar: PORT=3000 node index.js
+//
+// Cada petición al endpoint /mcp crea su propio transport
+// (modo stateless), lo que simplifica el deploy y el escalado.
+const PORT = process.env.PORT || 3000;
+
+const httpServer = createServer(async (req, res) => {
+  // Solo atendemos el endpoint /mcp
+  if (req.url !== "/mcp") {
+    res.writeHead(404).end("Not found");
+    return;
+  }
+
+  // Creamos un transport nuevo por cada petición (stateless)
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  await server.connect(transport);
+  await transport.handleRequest(req, res);
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`Piriod MCP server corriendo en http://localhost:${PORT}/mcp`);
+});
